@@ -1,0 +1,91 @@
+service: lessthanonemin
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  stage: dev
+  runtime: python3.9
+  lambdaHashingVersion: 20201221
+  region: ap-southeast-1
+  deploymentBucket:
+    name: lessthanonemin-deployment-bucket
+    serverSideEncryption: AES256
+  environment:
+    FEED_BUCKET_NAME: !Ref lessthanoneminScraperBucket
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "s3:PutObject"
+      Resource: !Sub
+        - "arn:aws:s3:::#{BucketName}/*"
+        - BucketName: !Ref lessthanoneminScraperBucket
+
+plugins:
+  - serverless-cloudformation-sub-variables
+  - serverless-step-functions
+  - serverless-python-requirements
+  - serverless-deployment-bucket
+
+
+custom:
+  pythonRequirements:
+    dockerizePip: 'non-linux'
+    dockerImage: public.ecr.aws/sam/build-python3.9:latest
+    # Omits tests, __pycache__, *.pyc etc from dependencies
+    slim: true
+
+functions:
+  lambdaScrape:
+    handler: launcher.scrape
+
+  scrape_quotes:
+    handler: launcher.scrape
+    environment:
+      SPIDER_NAME: 'quotes'
+
+resources:
+  - ${file(./resources/s3-template.yml)}
+
+stepFunctions:
+  stateMachines:
+    everyMinute:
+      type: EXPRESS
+      events:
+        - schedule:
+            rate: rate(1 minute)
+      name:
+        everyMinutes
+      definition:
+        StartAt: Create Loop Items
+        States:
+          Create Loop Items:
+            Type: Pass
+            Next: Loop
+            Result:
+              items: [ 1, 2, 3, 4, 5, 6 ]
+          Loop:
+            Type: Map
+            ItemsPath: "$.items"
+            MaxConcurrency: 1
+            Iterator:
+              StartAt: Wait 10 Seconds
+              States:
+                Wait 10 Seconds:
+                  Type: Wait
+                  Seconds: 10
+                  Next: Invoke Lambdas
+                Invoke Lambdas:
+                  Type: Parallel
+                  Branches:
+                    - StartAt: scrape_quotes
+                      States:
+                        scrape_quotes:
+                          Type: Task
+                          Resource: arn:aws:states:::lambda:invoke
+                          Parameters:
+                            FunctionName: !GetAtt scrape_quotes.Arn
+                            InvocationType: Event
+                          End: true
+                  End: true
+            End: true
